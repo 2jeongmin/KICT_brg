@@ -1,0 +1,133 @@
+# 기본 설정 파일
+
+# 데이터 소스
+data:
+  root_dir: "Z:/05. Data/01. Under_Process/027. KICT_BMAPS/upload"
+  mode: "stream"  # stream | extract_delete | temp_dir
+  temp_dir: null  # temp_dir 모드일 때만 사용
+  file_pattern: "*.zip"
+  
+# 추출할 특성값
+features:
+  # 가속도 센서
+  acceleration:
+    extract: ["ptp", "mean", "std", "rms", "noise", "fft", "kurtosis", "skewness"]
+    sampling_rate: 100  # Hz
+    
+    # FFT 설정
+    fft:
+      freq_range: [0.5, 20]  # Hz, 분석 주파수 범위
+      n_peaks: 3  # 추출할 피크 개수
+      prominence_ratio: 0.1  # 피크 검출 임계값 (최대값 대비)
+    
+    # 노이즈 레벨 계산 방법
+    noise:
+      method: "static_std"  # static_std | full_std | snr
+      static_threshold: 0.01  # 정적 구간 판단 기준 (m/s²)
+  
+  # 정적 센서
+  static:
+    extract: ["mean", "ptp", "noise"]
+    sensor_types: ["temperature", "humidity", "displacement", "crack"]
+
+# 데이터베이스
+database:
+  host: "localhost"
+  port: 5432
+  database: "bridge_monitoring"
+  user: "postgres"
+  password: "your_password"
+  schema: "public"
+  
+  # 테이블명
+  tables:
+    acc_features: "acc_hourly_features"
+    static_features: "static_hourly_features"
+  
+  # 배치 insert 크기
+  batch_size: 1000
+
+# 처리 설정
+processing:
+  # 배치 크기
+  batch_size: 100  # 한번에 처리할 zip 파일 개수
+  
+  # 병렬 처리
+  n_workers: 4  # CPU 코어 수
+  use_multiprocessing: true
+  
+  # 제한 (테스트용)
+  max_files: null  # null = 전체, 숫자 = 제한
+  
+  # 필터
+  sensors: null  # null = 전체, 리스트 = 특정 센서만
+  date_range:
+    start: null  # "2024-01-01"
+    end: null    # "2024-12-31"
+  
+  # 재처리
+  reprocess: false  # true면 기존 데이터 덮어쓰기
+  skip_existing: true  # true면 이미 처리된 파일 건너뛰기
+
+# 검증 설정
+validation:
+  enable: true
+  
+  # 가속도 센서
+  acceleration:
+    min_records: 320000  # 시간당 최소 데이터 개수
+    max_records: 400000  # 시간당 최대 데이터 개수
+    value_range: [-100, 100]  # m/s²
+    time_delta_range: [9, 11]  # ms, 100Hz 기준
+  
+  # 이상치 처리
+  outlier_handling: "flag"  # flag | remove | none
+
+# 로깅
+logging:
+  level: "INFO"  # DEBUG | INFO | WARNING | ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # 파일 로깅
+  file:
+    enable: true
+    dir: "logs"
+    filename_format: "processing_%Y%m%d_%H%M%S.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+  
+  # 콘솔 로깅
+  console:
+    enable: true
+    color: true
+
+# 성능 모니터링
+monitoring:
+  enable: true
+  report_interval: 100  # N개 파일마다 진행 상황 출력
+  
+  # 프로파일링
+  profiling:
+    enable: false
+    output_dir: "logs/profiling"
+
+
+# database 섹션
+database:
+  host: "localhost"
+  port: 5432
+  database: "bridge_monitoring"
+  user: "postgres"
+  password: "your_password"
+  schema: "public"
+  
+  # 테이블명
+  tables:
+    acc_features: "acc_hourly_features"
+    static_features: "static_hourly_features"
+  
+  # 배치 insert 크기
+  batch_size: 1000
+  
+  # 중복 처리 방식
+  on_conflict: "skip"  # skip | update

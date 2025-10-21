@@ -1,0 +1,25 @@
+# 테스트용 설정 (default.yaml 오버라이드)
+
+data:
+  root_dir: "Z:/05. Data/01. Under_Process/027. KICT_BMAPS/upload"
+  mode: "stream"
+
+features:
+  acceleration:
+    extract: ["ptp", "noise", "fft"]  # 최소한만
+
+processing:
+  max_files: 10  # 10개만 테스트
+  n_workers: 2
+  batch_size: 5
+
+database:
+  database: "bridge_monitoring_test"  # 테스트 DB
+
+logging:
+  level: "DEBUG"
+  console:
+    enable: true
+
+monitoring:
+  report_interval: 1  # 매 파일마다
