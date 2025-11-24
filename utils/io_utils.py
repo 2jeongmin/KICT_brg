@@ -4,7 +4,7 @@ Binary 파일 I/O 유틸리티
 """
 import struct
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -12,73 +12,6 @@ from pandas import DataFrame
 import logging
 
 logger = logging.getLogger(__name__)
-
-def get_df_from_bin(filepath: Path) -> pd.DataFrame:
-    """
-    bin 파일을 DataFrame으로 변환
-    
-    Format: [int64(timestamp_ms, big-endian) + float32(value, big-endian)] 반복
-    
-    Returns:
-        DataFrame with columns ['time', 'value']
-    """
-    file_size = filepath.stat().st_size
-    record_size = 8 + 4  # int64 + float32
-    n_records = file_size // record_size
-    
-    # 미리 할당
-    timestamps = np.empty(n_records, dtype='int64')
-    values = np.empty(n_records, dtype='float32')
-    
-    with open(filepath, 'rb') as f:
-        for i in range(n_records):
-            ts_bytes = f.read(8)
-            val_bytes = f.read(4)
-            
-            if len(ts_bytes) < 8 or len(val_bytes) < 4:
-                break
-                
-            timestamps[i] = struct.unpack('>q', ts_bytes)[0]
-            values[i] = struct.unpack('>f', val_bytes)[0]
-    
-    # DataFrame 생성
-    df = pd.DataFrame({
-        'time': pd.to_datetime(timestamps[:i], unit='ms'),
-        'value': values[:i]
-    })
-    
-    return df
-
-def parse_bin_filename(filepath: Path) -> dict:
-    """
-    bin 파일명 파싱
-    
-    Format: smartcs_1_DNA21001_2024102520.bin
-    
-    Returns:
-        {'system': 'smartcs', 'id': '1', 'sensor': 'DNA21001', 
-         'year': 2024, 'month': 10, 'day': 25, 'hour': 20}
-    """
-    parts = filepath.stem.split('_')
-    
-    if len(parts) < 4:
-        raise ValueError(f"Invalid filename format: {filepath.name}")
-    
-    system = parts[0]
-    id_num = parts[1]
-    sensor = parts[2]
-    datetime_str = parts[3]
-    
-    return {
-        'system': system,
-        'id': id_num,
-        'sensor': sensor,
-        'year': int(datetime_str[:4]),
-        'month': int(datetime_str[4:6]),
-        'day': int(datetime_str[6:8]),
-        'hour': int(datetime_str[8:10]),
-        'filename': filepath.name
-    }
 
 def get_df_from_bin(filepath: Path, validate: bool = True) -> DataFrame:
     """
@@ -97,11 +30,6 @@ def get_df_from_bin(filepath: Path, validate: bool = True) -> DataFrame:
     
     Raises:
         FileNotFoundError: 파일이 없는 경우
-        ValueError: 파일 크기가 비정상인 경우
-    
-    Performance:
-        - 시간당 파일(~360,000 rows): ~0.3초
-        - 메모리: 파일당 약 3MB
     """
     if not filepath.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
@@ -166,9 +94,6 @@ def get_df_from_bin(filepath: Path, validate: bool = True) -> DataFrame:
 def _validate_dataframe(df: DataFrame, filepath: Path) -> Dict[str, bool]:
     """
     DataFrame 데이터 품질 검증
-    
-    Returns:
-        검증 결과 딕셔너리 (이상 있는 항목만 포함)
     """
     issues = {}
     
@@ -211,19 +136,6 @@ def find_bin_files(root_dir: Path,
                    recursive: bool = True) -> List[Path]:
     """
     디렉토리에서 bin 파일 찾기
-    
-    Args:
-        root_dir: 검색 시작 디렉토리
-        pattern: 파일 패턴 (기본값: "*.bin")
-        recursive: 하위 디렉토리 포함 여부
-    
-    Returns:
-        bin 파일 경로 리스트 (정렬됨)
-    
-    Example:
-        >>> files = find_bin_files(Path("data/raw"))
-        >>> len(files)
-        50000
     """
     root_path = Path(root_dir)
     
@@ -242,87 +154,75 @@ def find_bin_files(root_dir: Path,
     return files
 
 
+# ===============================================
+# CRITICAL FIX: 모든 파일명 예외 처리 지원
+# ===============================================
 def parse_bin_filename(filepath: Path) -> Dict[str, any]:
     """
-    bin 파일명에서 메타데이터 추출
+    bin 파일명에서 메타데이터 추출 (모든 예외 상황 처리 버전)
     
-    파일명 패턴: {system}_{id}_{sensor}_{YYYYMMDDhh}.bin
-    예시: smartcs_1_DNA21006_2024032620.bin
+    지원 패턴:
+    1. Standard (10자리 시간): bmaps_1_DNA22026_2024102901.zip
+    2. Standard (12자리 시간): bmaps_1_gcskyb01_202410251800.zip
+    3. Extra Parts (gnss1):    bmaps_5_gnss1_0_2024102519.zip
+    4. Corrupted/Extended:     bmaps_2_DNAGW22019_99_1_2025031704.bin
     
     Args:
         filepath: bin 파일 경로
     
     Returns:
-        메타데이터 딕셔너리:
-        - system: 시스템 ID (예: 'smartcs')
-        - system_id: 시스템 번호 (예: 1)
-        - sensor_id: 센서 ID (예: 'DNA21006')
-        - timestamp: 시간 (datetime)
-        - hour: 시간 (datetime, 분/초는 00:00)
-        - filename: 원본 파일명
-    
-    Raises:
-        ValueError: 파일명 형식이 맞지 않는 경우
-    
-    Example:
-        >>> parse_bin_filename(Path("smartcs_1_DNA21006_2024032620.bin"))
-        {
-            'system': 'smartcs',
-            'system_id': 1,
-            'sensor_id': 'DNA21006',
-            'timestamp': datetime(2024, 3, 26, 20, 0),
-            'hour': datetime(2024, 3, 26, 20, 0),
-            'filename': 'smartcs_1_DNA21006_2024032620.bin'
-        }
+        메타데이터 딕셔너리
     """
     filename = filepath.stem  # 확장자 제거
     parts = filename.split('_')
     
+    # 최소 4개의 파트가 있어야 함 [system, id, sensor, ..., time]
     if len(parts) < 4:
-        raise ValueError(f"Invalid filename format: {filepath.name}")
+        raise ValueError(f"Invalid filename format (less than 4 parts): {filepath.name}")
     
     try:
-        system = parts[0]
-        system_id = int(parts[1])
+        # 1. 시간 문자열 추출 (항상 마지막 파트)
+        time_str = parts[-1]
+        
+        # 시간 포맷 결정 (10자리 또는 12자리)
+        if len(time_str) == 10:  # YYYYMMDDHH
+            time_fmt = "%Y%m%d%H"
+        elif len(time_str) == 12:  # YYYYMMDDHHMM
+            time_fmt = "%Y%m%d%H%M"
+        else:
+            # 알 수 없는 시간 형식이지만, 숫자라면 일단 ValueError를 내고 로그 확인 유도
+            raise ValueError(f"Unknown timestamp format (length {len(time_str)}): {time_str}")
+            
+        timestamp = datetime.strptime(time_str, time_fmt)
+        
+        # 2. 센서 ID 추출 (항상 3번째 파트, index 2)
+        # 예: bmaps_5_gnss1_0_... -> 'gnss1'
+        # 예: bmaps_1_DNA22026_... -> 'DNA22026'
         sensor_id = parts[2]
-        time_str = parts[3]  # YYYYMMDDhh
         
-        # 시간 파싱
-        year = int(time_str[:4])
-        month = int(time_str[4:6])
-        day = int(time_str[6:8])
-        hour = int(time_str[8:10])
-        
-        timestamp = datetime(year, month, day, hour)
-        
+        # 3. 시스템 및 시스템 ID
+        system = parts[0]
+        try:
+            system_id = int(parts[1])
+        except ValueError:
+            system_id = parts[1] # 숫자가 아니면 문자열 그대로
+            
         return {
             'system': system,
             'system_id': system_id,
             'sensor_id': sensor_id,
             'timestamp': timestamp,
-            'hour': timestamp,  # 시간 단위
+            'hour': timestamp.replace(minute=0, second=0, microsecond=0), # 분석용 시간(시 단위 절삭)
             'filename': filepath.name
         }
     
-    except (ValueError, IndexError) as e:
-        raise ValueError(f"Failed to parse filename {filepath.name}: {e}")
+    except Exception as e:
+        raise ValueError(f"Failed to parse filename '{filepath.name}': {e}")
 
 
 def get_file_info_batch(filepaths: List[Path]) -> DataFrame:
     """
     여러 파일의 메타데이터를 배치로 추출
-    
-    Args:
-        filepaths: bin 파일 경로 리스트
-    
-    Returns:
-        파일 정보 DataFrame
-        columns: ['filename', 'system', 'system_id', 'sensor_id', 'hour', 'file_size']
-    
-    Example:
-        >>> files = find_bin_files(Path("data/raw"))
-        >>> file_info = get_file_info_batch(files)
-        >>> file_info.groupby('sensor_id').size()
     """
     records = []
     
@@ -339,22 +239,10 @@ def get_file_info_batch(filepaths: List[Path]) -> DataFrame:
     return df
 
 
-# 편의 함수들
 def estimate_processing_time(n_files: int, 
                             files_per_second: float = 3.0) -> str:
     """
     예상 처리 시간 계산
-    
-    Args:
-        n_files: 처리할 파일 개수
-        files_per_second: 초당 처리 파일 수
-    
-    Returns:
-        예상 소요 시간
-    
-    Example:
-        >>> estimate_processing_time(50000)
-        '4시간 37분'
     """
     total_seconds = n_files / files_per_second
     hours = int(total_seconds // 3600)
@@ -377,25 +265,27 @@ if __name__ == "__main__":
         
         print(f"\n=== Testing {test_file.name} ===")
         
-        # 파일명 파싱
-        info = parse_bin_filename(test_file)
-        print(f"\n파일 정보:")
-        for key, value in info.items():
-            print(f"  {key}: {value}")
-        
-        # 데이터 읽기
-        import time
-        start = time.time()
-        df = get_df_from_bin(test_file)
-        elapsed = time.time() - start
-        
-        print(f"\n데이터 읽기 완료:")
-        print(f"  행 개수: {len(df):,}")
-        print(f"  소요 시간: {elapsed:.3f}초")
-        print(f"  처리 속도: {len(df)/elapsed:,.0f} rows/sec")
-        print(f"\n데이터 샘플:")
-        print(df.head())
-        print(f"\n기본 통계:")
-        print(df.describe())
+        try:
+            # 파일명 파싱 테스트
+            info = parse_bin_filename(test_file)
+            print(f"\n파일 정보 (파일명 파싱 성공):")
+            for key, value in info.items():
+                print(f"  {key}: {value}")
+            
+            # 데이터 읽기 테스트
+            import time
+            start = time.time()
+            df = get_df_from_bin(test_file)
+            elapsed = time.time() - start
+            
+            print(f"\n데이터 읽기 완료:")
+            print(f"  행 개수: {len(df):,}")
+            print(f"  소요 시간: {elapsed:.3f}초")
+            
+        except Exception as e:
+            print(f"\n!!! ERROR 발생: {e}")
+            import traceback
+            traceback.print_exc()
+            
     else:
         print("Usage: python io_utils.py <bin_file_path>")
