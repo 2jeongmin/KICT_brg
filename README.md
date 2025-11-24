@@ -19,17 +19,16 @@
 프로젝트는 `main.py`와 유틸리티 기능을 분리한 `utils` 디렉토리로 구성
 
 /
-├── main.py                   # 주 분석 및 병렬 처리 로직
-├── requirements.txt          # 외부 파이썬 종속성 목록
-├── utils/                    # 유틸리티 기능 디렉토리
-│   ├── __init__.py           # 파이썬 패키지 선언
-│   ├── zip_handler.py        # ZIP 파일 스트림 처리 로직 포함
-│   ├── feature_extraction.py # FFT 계산 및 신호 특징 추출 로직 포함
-│   └── io_utils.py           # 파일 이름 파싱 유틸리티 포함
-└── upload/                   # [필수] 입력 데이터 루트 폴더 (BASE_DATA_DIR)
-    └── [Sensor ID]/
-        └── *.zip             # 시간별/일별 데이터 ZIP 파일
-
+├── main.py                    # 주 분석 및 병렬 처리 로직
+├── requirements.txt           # 외부 파이썬 종속성 목록
+├── utils/                     # 유틸리티 기능 디렉토리
+│   ├── __init__.py            # 파이썬 패키지 선언
+│   ├── zip_handler.py         # ZIP 파일 스트림 처리 로직 포함
+│   ├── feature_extraction.py  # FFT 계산 및 신호 특징 추출 로직 포함
+│   └── io_utils.py            # 파일 이름 파싱 유틸리티 포함
+└── upload/                    # 입력 데이터 루트 폴더 (BASE_DATA_DIR)
+    └── [Sensor ID]/           # 센서 ID별 폴더
+        └── *.zip              # 시간별/일별 데이터 ZIP 파일
 
 ### 2.2. 환경 설정 및 종속성 설치
 
