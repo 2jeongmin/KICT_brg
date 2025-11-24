@@ -124,15 +124,7 @@ class ZipHandler:
         return zip_files
     
     def get_bin_list_from_zip(self, zip_path: Path) -> List[str]:
-        """
-        zip 파일 내부의 bin 파일 목록 반환
-        
-        Args:
-            zip_path: zip 파일 경로
-        
-        Returns:
-            bin 파일명 리스트
-        """
+        """zip 파일 내부의 bin 파일 목록 반환"""
         try:
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 bin_files = [f for f in zf.namelist() if f.endswith('.bin')]
@@ -140,6 +132,28 @@ class ZipHandler:
         except Exception as e:
             logger.error(f"Failed to read zip file {zip_path.name}: {e}")
             return []
+
+    list_bin_files_in_zip = get_bin_list_from_zip
+
+    def get_df_from_zip(self, zip_path: Path, bin_filename: str) -> DataFrame:
+        """
+        zip 파일 내 특정 bin 파일을 DataFrame으로 읽기
+        
+        Args:
+            zip_path: zip 파일 경로
+            bin_filename: zip 내부의 bin 파일명
+        
+        Returns:
+            DataFrame (columns=['time', 'value'])
+        """
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                with zf.open(bin_filename) as bin_file:
+                    bin_data = bin_file.read()
+                return self.parse_bin_from_bytes(bin_data)
+        except Exception as e:
+            logger.error(f"Failed to read {bin_filename} from {zip_path.name}: {e}")
+            return DataFrame(columns=['time', 'value'])
     
     def parse_bin_from_bytes(self, bin_data: bytes) -> DataFrame:
         """

@@ -53,7 +53,9 @@ N_WORKERS_SENSORS = 16  # 센서 폴더 레벨 병렬화 (CPU 코어 수에 맞�
 def setup_logging():
     """기본 로깅 설정 - 콘솔 및 파일 동시 출력"""
     from datetime import datetime
-    
+
+    BASE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     # 로그 파일명 (타임스탬프 포함)
     log_filename = BASE_OUTPUT_DIR / f"processing_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
@@ -221,20 +223,56 @@ def plot_average_fft(ax: plt.Axes,
                      p95_power: np.ndarray, 
                      peak_indices: np.ndarray, 
                      peak_prominences: np.ndarray,
+                     peak_widths_hz: np.ndarray,
                      title_info: Dict,
                      show_peaks: bool = True):
+
+    # 평균 스펙트럼 (파란색 라인)
     ax.plot(xf_master, mean_power, color='blue', linewidth=2.0, label='Average amplitude')
+    
+    # 범위 (파란색 반투명 영역)
     ax.fill_between(xf_master, p05_power, p95_power, color='blue', alpha=0.2, label='Amplitude range')
     
     if show_peaks and peak_indices.size > 0:
         peak_freqs = xf_master[peak_indices]
         peak_amps = mean_power[peak_indices]
-        ax.scatter(peak_freqs, peak_amps, c='red', s=100, zorder=5, label='Detected modes')
         
+        # 피크 마커
+        ax.scatter(peak_freqs, peak_amps, marker='x', c='red', s=200, 
+                   linewidths=3, zorder=5, label='Identified modes')
+        
+        # prominence 표시
+        for i, (pf, pa, prom) in enumerate(zip(peak_freqs, peak_amps, peak_prominences)):
+            if pf > 0 and prom > 0:
+                ax.annotate('', xy=(pf, pa), xytext=(pf, pa - prom),
+                           arrowprops=dict(arrowstyle='-', color='orange', lw=2))
+                
+                if i == 0:
+                    ax.plot([pf, pf], [pa - prom, pa], color='orange', lw=2, 
+                           label='Prominence', zorder=4)
+        
+        # FWHP (Full Width at Half-Prominence)
+        for i, (pf, pa, width_hz) in enumerate(zip(peak_freqs, peak_amps, peak_widths_hz)):
+            if pf > 0 and width_hz > 0:
+                # Half-prominence 높이에서 수평선
+                half_height = pa - peak_prominences[i] / 2.0
+                left_f = pf - width_hz / 2.0
+                right_f = pf + width_hz / 2.0
+                
+                if i == 0:
+                    ax.plot([left_f, right_f], [half_height, half_height], 
+                           color='purple', lw=2, label='FWHP', zorder=4)
+                else:
+                    ax.plot([left_f, right_f], [half_height, half_height], 
+                           color='purple', lw=2, zorder=4)
+        
+        # 주파수 텍스트
         for pf, pa in zip(peak_freqs, peak_amps):
             if pf > 0:
-                ax.text(pf, pa*1.05, f'{pf:.2f} Hz', 
-                       ha='center', va='bottom', fontsize=10, fontweight='bold')
+                ax.text(pf, pa*1.05, f'{pf:.3f} Hz', 
+                       ha='center', va='bottom', fontsize=10, fontweight='bold',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
+                                edgecolor='black', alpha=0.8))
     
     ax.set_xlabel('Frequency [Hz]', fontsize=14)
     ax.set_ylabel('Amplitude', fontsize=14)
@@ -314,12 +352,11 @@ def process_single_zip_for_pass1(args):
                 metadata = parse_bin_filename(Path(bin_filename))
                 hour = metadata['hour']
                 
-                fft_result = extractor.extract_fft_features(df)
-                if fft_result is None:
+                try:
+                    xf_orig, power_orig = extractor.get_fft_spectrum(df['value'].values)
+                except Exception as e:
+                    logging.error(f"FFT failed for {bin_filename}: {e}")
                     continue
-                
-                xf_orig = fft_result['freqs']
-                power_orig = fft_result['power']
                 
                 interpolated_power = np.interp(xf_master, xf_orig, power_orig)
                 results.append((interpolated_power, hour, df, xf_orig, power_orig))
@@ -338,15 +375,13 @@ def find_hourly_peaks_in_bins(hour, df, extractor, search_bins, mode_column_name
     """
     PASS 2: 개별 시간별 데이터에서 탐색 빈 내의 피크를 찾음
     """
-    fft_result = extractor.extract_fft_features(df)
-    if fft_result is None:
+    try:
+        xf, power = extractor.get_fft_spectrum(df['value'].values)
+    except Exception as e:
         data = {'time': hour}
         for col in mode_column_names:
             data[col] = 0.0
         return data
-    
-    xf = fft_result['freqs']
-    power = fft_result['power']
     
     hourly_peaks = {'time': hour}
     
@@ -372,16 +407,23 @@ def find_hourly_peaks_in_bins(hour, df, extractor, search_bins, mode_column_name
 
 def process_static_sensor_folder(sensor_dir: Path, base_output_dir: Path):
     """정적 센서 처리 (온도, 습도, 변위, 균열 등)"""
-    from utils.database import TimeseriesDB
+    # from utils.database import TimeseriesDB
     
     sensor_id = sensor_dir.name
     logging.info(f"===== STATIC 센서 [{sensor_id}] 처리 중 =====")
     
-    db = TimeseriesDB()
-    
-    if db.check_sensor_exists(sensor_id):
-        logging.info(f"[{sensor_id}] 이미 처리됨 - 건너뜀")
+    sensor_output_dir = base_output_dir / sensor_id
+    csv_path = sensor_output_dir / f"{sensor_id}_static_features.csv"
+
+    if csv_path.exists():
+        logging.info(f"[{sensor_id}] 정적 센서 결과 파일이 이미 존재합니다.")
         return
+
+    # db = TimeseriesDB()
+    
+    # if db.check_sensor_exists(sensor_id):
+    #     logging.info(f"[{sensor_id}] 이미 처리됨 - 건너뜀")
+    #     return
     
     handler = ZipHandler(mode='stream')
     extractor = FeatureExtractor(
@@ -411,18 +453,18 @@ def process_static_sensor_folder(sensor_dir: Path, base_output_dir: Path):
                     metadata = parse_bin_filename(Path(bin_filename))
                     hour = metadata['hour']
                     
-                    basic_features = extractor.extract_basic_statistics(df)
-                    
+                    features = extractor.extract_all(df, sensor_type='static')
+
                     record = {
                         'time': hour,
                         'sensor_id': sensor_id,
-                        'mean': basic_features.get('mean', 0.0),
-                        'std': basic_features.get('std', 0.0),
-                        'min': basic_features.get('min', 0.0),
-                        'max': basic_features.get('max', 0.0),
-                        'ptp': basic_features.get('ptp', 0.0),
-                        'data_count': len(df),
-                        'is_valid': True
+                        'mean': features.get('mean', 0.0),
+                        'std': features.get('noise_level', 0.0),
+                        'min': features.get('min', 0.0),
+                        'max': features.get('max', 0.0),
+                        'ptp': features.get('ptp', 0.0),
+                        'data_count': features.get('data_count', len(df)),
+                        'is_valid': features.get('is_valid', True)
                     }
                     all_hourly_records.append(record)
                     
@@ -435,8 +477,14 @@ def process_static_sensor_folder(sensor_dir: Path, base_output_dir: Path):
             continue
     
     if all_hourly_records:
-        db.insert_static_features(all_hourly_records)
-        logging.info(f"[{sensor_id}] {len(all_hourly_records)}개의 시간별 기록을 저장했습니다.")
+        # CSV로 저장
+        output_dir = base_output_dir / sensor_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        df = pd.DataFrame(all_hourly_records)
+        csv_path = output_dir / f"{sensor_id}_static_features.csv"
+        df.to_csv(csv_path, index=False)
+        logging.info(f"[{sensor_id}] {len(all_hourly_records)}개의 시간별 기록을 저장했습니다: {csv_path}")
     else:
         logging.warning(f"[{sensor_id}] 처리된 데이터가 없습니다.")
 
@@ -456,7 +504,7 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
     # 이미 처리된 파일이 있는지 확인
     TARGET_N_MODES = 3
     expected_files = [
-        sensor_output_dir / f"{sensor_id}_frequency_trend_{TARGET_N_MODES}_modes.xlsx",
+        sensor_output_dir / f"{sensor_id}_frequency_trend_{TARGET_N_MODES}_modes.csv",
         sensor_output_dir / f"{sensor_id}_1_avg_fft_with_peaks.png",
         sensor_output_dir / f"{sensor_id}_3_freq_trend_{TARGET_N_MODES}_modes.png"
     ]
@@ -568,6 +616,16 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
             identified_prominences.append(0)
     identified_prominences = np.array(identified_prominences)
 
+    # identified_widths_hz 재구성 (FWHP 시각화용)
+    identified_widths_hz = []
+    for c in filtered_candidates:
+        if c['idx'] in original_idx_list:
+            pos = original_idx_list.index(c['idx'])
+            identified_widths_hz.append(widths_hz[pos])
+        else:
+            identified_widths_hz.append(0)
+    identified_widths_hz = np.array(identified_widths_hz)
+
     logging.info(f"[{sensor_id}] 최종 고유 모드 (Hz): {np.round(identified_modes_hz, 3)}")
 
     # 4. 탐색 빈 정의
@@ -582,19 +640,19 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
         bin_max = min(PLOT_FREQ_MAX, center_freq + half_width)
         search_bins.append((bin_min, bin_max))
 
-    logging.info(f"[{sensor_id}] 탐색 빈 (반-돌출부 너비): {[(round(a,2), round(b,2)) for a,b in search_bins]}")
+    logging.info(f"[{sensor_id}] 탐색 (반-돌출부 너비): {[(round(a,2), round(b,2)) for a,b in search_bins]}")
     mode_column_names = ['1st_mode', '2nd_mode', '3rd_mode']
 
     # --- PASS 2 ---
-    hourly_freq_data_for_excel = []
+    hourly_freq_data_for_csv = []
     for hour, df, xf_orig, power_orig in tqdm(hourly_fft_data_cache, desc=f"Pass 2/2 [{sensor_id}]"):
         if df is None: 
             empty_data = {'time': hour}
             for col in mode_column_names: empty_data[col] = 0.0
-            hourly_freq_data_for_excel.append(empty_data)
+            hourly_freq_data_for_csv.append(empty_data)
             continue
         hourly_peaks = find_hourly_peaks_in_bins(hour, df, extractor, search_bins, mode_column_names)
-        hourly_freq_data_for_excel.append(hourly_peaks)
+        hourly_freq_data_for_csv.append(hourly_peaks)
 
     # 결과 저장
     try:
@@ -611,17 +669,18 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
         'file_count': len(all_interpolated_powers)
     }
 
-    freq_trend_df = pd.DataFrame(hourly_freq_data_for_excel)
+    freq_trend_df = pd.DataFrame(hourly_freq_data_for_csv)
     if not freq_trend_df.empty:
         freq_trend_df = freq_trend_df.sort_values(by='time')
-        excel_filename = sensor_output_dir / f"{sensor_id}_frequency_trend_{TARGET_N_MODES}_modes.xlsx"
-        freq_trend_df.to_excel(excel_filename, index=False, sheet_name='Hourly_Modes')
+        csv_filename = sensor_output_dir / f"{sensor_id}_frequency_trend_{TARGET_N_MODES}_modes.csv"
+        freq_trend_df.to_csv(csv_filename, index=False)
 
     try:
         fig1, ax1 = plt.subplots(figsize=(16, 8))
         plot_average_fft(ax1, xf_master, mean_power, p05_power, p95_power, 
-                          identified_indices, identified_prominences,
-                          title_info, show_peaks=True)
+                        identified_indices, identified_prominences,
+                        identified_widths_hz,
+                        title_info, show_peaks=True)
         fig1.suptitle(f"Sensor Analysis : {sensor_id}", fontsize=16, fontweight='bold')
         fig1.tight_layout(rect=[0, 0.03, 1, 0.95])
         fig1.savefig(sensor_output_dir / f"{sensor_id}_1_avg_fft_with_peaks.png", dpi=150)
@@ -675,8 +734,7 @@ def process_sensor_wrapper(args):
 
 def main():
     setup_logging()
-    BASE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     sensor_dirs = [
         d for d in BASE_DATA_DIR.iterdir() 
         if d.is_dir() 
