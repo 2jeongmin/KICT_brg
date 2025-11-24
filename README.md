@@ -18,7 +18,17 @@
 
 프로젝트는 `main.py`와 유틸리티 기능을 분리한 `utils` 디렉토리로 구성됩니다.
 
-/ ├── main.py # 주 분석 및 병렬 처리 로직 ├── requirements.txt # 외부 파이썬 종속성 목록 ├── utils/ │ ├── init.py # 파이썬 패키지 선언 │ ├── zip_handler.py # ZIP 파일 스트림 처리 로직 포함 │ ├── feature_extraction.py # FFT 계산 및 신호 특징 추출 로직 포함 │ └── io_utils.py # 파일 이름 파싱 유틸리티 포함 └── upload/ # [필수] 입력 데이터 루트 폴더 (BASE_DATA_DIR) └── [Sensor ID]/ └── *.zip # 시간별/일별 데이터 ZIP 파일
+/
+├── main.py                   # 주 분석 및 병렬 처리 로직
+├── requirements.txt          # 외부 파이썬 종속성 목록
+├── utils/                    # 유틸리티 기능 디렉토리
+│   ├── __init__.py           # 파이썬 패키지 선언
+│   ├── zip_handler.py        # ZIP 파일 스트림 처리 로직 포함
+│   ├── feature_extraction.py # FFT 계산 및 신호 특징 추출 로직 포함
+│   └── io_utils.py           # 파일 이름 파싱 유틸리티 포함
+└── upload/                   # [필수] 입력 데이터 루트 폴더 (BASE_DATA_DIR)
+    └── [Sensor ID]/
+        └── *.zip             # 시간별/일별 데이터 ZIP 파일
 
 
 ### 2.2. 환경 설정 및 종속성 설치
@@ -38,13 +48,16 @@
 
 `main.py` 스크립트 상단의 **'4. [IMPORTANT] User Configuration'** 섹션에서 다음 주요 변수를 환경에 맞게 반드시 설정해야 합니다.
 
-변수,설명
-BASE_DATA_DIR,입력 데이터(upload/ 폴더)의 절대 경로를 설정합니다.
-BASE_OUTPUT_DIR,분석 결과물이 저장될 폴더의 경로를 설정합니다.
-TARGET_MIN_MODES,적응형 피크 감지 시 최소 목표 모드 개수 (기본값 1).
-TARGET_MAX_MODES,적응형 피크 감지 시 최대 목표 모드 개수 (기본값 5).
-N_WORKERS_SENSORS,센서 폴더 레벨 병렬 처리 코어 수.
-N_WORKERS_ZIP_FILES,개별 센서 내 ZIP 파일 처리 병렬 처리 코어 수.
+| 변수 | 설명 |
+| :--- | :--- |
+| **BASE\_DATA\_DIR** | 입력 데이터 (`upload/` 폴더)의 절대 경로를 설정합니다. |
+| **BASE\_OUTPUT\_DIR** | 분석 결과물이 저장될 폴더의 경로를 설정합니다. |
+| **TARGET\_MIN\_MODES** | 적응형 피크 감지 시 최소 목표 모드 개수 (기본값 1). |
+| **TARGET\_MAX\_MODES** | 적응형 피크 감지 시 최대 목표 모드 개수 (기본값 5). |
+| **N\_WORKERS\_SENSORS** | 센서 폴더 레벨 병렬 처리 코어 수. |
+| **N\_WORKERS\_ZIP\_FILES** | 개별 센서 내 ZIP 파일 처리 병렬 처리 코어 수. |
+
+---
 
 ### 3.2. 분석 실행
 
@@ -53,13 +66,17 @@ N_WORKERS_ZIP_FILES,개별 센서 내 ZIP 파일 처리 병렬 처리 코어 수
 ```bash
 python main.py
 
+---
+
+## 3. 사용법
+
+
 ## 4. 결과 출력
 분석 결과는 BASE_OUTPUT_DIR로 지정된 경로 아래 센서별 폴더에 저장됩니다.
 
-[ID]_1_avg_fft_adaptive.png: 전체 데이터에 대한 평균 FFT 스펙트럼 및 적응형으로 식별된 모드의 위치를 표시합니다.
-
-[ID]_3_freq_trend_adaptive.png: 추적된 각 모드 주파수의 시간 경과에 따른 변화 추세를 표시합니다.
-
-[ID]_frequency_trend_adaptive.xlsx: 시간별로 추출된 1st, 2nd, 3rd 모드의 주파수 데이터를 포함합니다.
-
-[ID]_static_features.xlsx: 정적 센서(예: DNAGW 포함 센서) 또는 FFT 분석 실패 센서의 시간별 기본 통계량(평균, 표준편차 등)을 포함합니다.
+| 파일명 형식 | 내용 |
+| :--- | :--- |
+| **`[ID]_1_avg_fft_adaptive.png`** | 전체 데이터에 대한 평균 FFT 스펙트럼 및 적응형으로 식별된 모드의 위치를 표시합니다. |
+| **`[ID]_3_freq_trend_adaptive.png`** | 추적된 각 모드 주파수의 시간 경과에 따른 변화 추세를 표시합니다. |
+| **`[ID]_frequency_trend_adaptive.xlsx`** | 시간별로 추출된 1st, 2nd, 3rd 모드의 주파수 데이터를 포함합니다. |
+| **`[ID]_static_features.xlsx`** | 정적 센서 또는 FFT 분석 실패 센서의 시간별 기본 통계량(평균, 표준편차 등)을 포함합니다. |
