@@ -33,7 +33,7 @@ except ImportError as e:
 BASE_DATA_DIR = Path(r"/home/user/WindowsShare/05. Data/01. Under_Process/027. KICT_BMAPS/upload2")
 
 # 출력 결과 폴더 경로 설정
-BASE_OUTPUT_DIR = Path(r"/home/user/WindowsShare/05. Data/01. Under_Process/027. KICT_BMAPS/upload2") / "analysis_results2"
+BASE_OUTPUT_DIR = Path(r"/home/user/WindowsShare/05. Data/01. Under_Process/027. KICT_BMAPS/upload") / "upload2_results"
 
 # FFT 분석 매개변수 설정
 SAMPLING_RATE = 100  # [Hz]
@@ -48,7 +48,7 @@ TARGET_MAX_MODES = 5
 MASTER_FFT_RESOLUTION = 2000
 
 # 병렬 처리 설정
-N_WORKERS_SENSORS = 16  # 센서 폴더 레벨 병렬화 (CPU 코어 수에 맞게 조정)
+N_WORKERS_SENSORS = 8  # 센서 폴더 레벨 병렬화 (CPU 코어 수에 맞게 조정)
 
 def setup_logging():
     """기본 로깅 설정 - 콘솔 및 파일 동시 출력"""
@@ -97,21 +97,21 @@ def classify_sensor_type(sensor_id: str) -> str:
         'unknown': 알 수 없음 (가속도 시도 후 실패시 정적으로 폴백)
     
     판별 규칙:
-        1. DNAGW 포함 → 명확한 정적 센서
-        2. DNA로 시작 (DNAGW 제외) → 명확한 가속도 센서
+        1. GW 포함 → 명확한 정적 센서
+        2. DNA로 시작 (GW 제외) → 명확한 가속도 센서  
         3. 그 외 (SKYB, GCSKYB 등) → unknown (시도 후 결정)
     """
     sensor_upper = sensor_id.upper()
     
-    # 1. 명확한 정적 센서: DNAGW만
-    if 'DNAGW' in sensor_upper:
+    # 1. 명확한 정적 센서: GW 포함 (DNAGW, GW 등)
+    if 'GW' in sensor_upper:
         return 'static'
     
-    # 2. 명확한 가속도 센서: DNA로 시작하고 GW 없는 경우
-    if sensor_id.startswith('DNA') and 'GW' not in sensor_upper:
+    # 2. 명확한 가속도 센서: DNA로 시작
+    if sensor_id.startswith('DNA'):
         return 'acceleration'
     
-    # 3. 그 외 모든 경우 (SKYB, GCSKYB, SGSKYB 등) → 시도 후 결정
+    # 3. 그 외 → 시도 후 결정
     return 'unknown'
 
 def find_peaks_iterative(spectrum, target_min=1, target_max=5, max_iter=15):
@@ -148,33 +148,56 @@ def find_peaks_iterative(spectrum, target_min=1, target_max=5, max_iter=15):
             
     return best_peaks, best_props, current_prominence
 
-def get_half_prom_widths(spectrum, peaks, properties):
+def get_half_prom_widths_accurate(spectrum, xf, peaks, properties):
     """
-    반-돌출부(Half-Prominence) 너비 계산
+    Half-prominence width를 정확히 계산하고 실제 교차점 주파수 반환
     
     Args:
-        spectrum: FFT 스펙트럼
+        spectrum: FFT 스펙트럼 진폭
+        xf: 주파수 배열 [Hz]
         peaks: 피크 인덱스
-        properties: find_peaks에서 반환된 properties dict
+        properties: find_peaks에서 반환한 properties
     
     Returns:
-        widths in indices
+        widths_hz: 각 피크의 width [Hz]
+        left_freqs: 왼쪽 교차점 주파수 [Hz]
+        right_freqs: 오른쪽 교차점 주파수 [Hz]
     """
     try:
-        # prominence_data는 (prominences, left_bases, right_bases) 튜플이어야 함
         prominence_data = (
             properties['prominences'], 
             properties['left_bases'], 
             properties['right_bases']
         )
-        widths, _, _, _ = peak_widths(spectrum, peaks, rel_height=0.5, 
-                                      prominence_data=prominence_data)
-        return widths
+        # peak_widths는 4개 값 반환:
+        # - widths: width in samples
+        # - width_heights: height at which widths are measured
+        # - left_ips: left interpolated positions
+        # - right_ips: right interpolated positions
+        widths_idx, width_heights, left_ips, right_ips = peak_widths(
+            spectrum, peaks, rel_height=0.5, prominence_data=prominence_data
+        )
+        
+        # 인덱스를 주파수로 변환
+        # xf가 균일 간격이라고 가정
+        freq_resolution = xf[1] - xf[0]
+        left_freqs = xf[0] + left_ips * freq_resolution
+        right_freqs = xf[0] + right_ips * freq_resolution
+        widths_hz = (right_ips - left_ips) * freq_resolution
+        
+        return widths_hz, left_freqs, right_freqs
+        
     except Exception as e:
         logging.error(f"peak_widths 계산 실패: {e}")
-        # 폴백: prominence 없이 계산
-        widths, _, _, _ = peak_widths(spectrum, peaks, rel_height=0.5)
-        return widths
+        # 폴백: prominence_data 없이 계산
+        widths_idx, width_heights, left_ips, right_ips = peak_widths(
+            spectrum, peaks, rel_height=0.5
+        )
+        freq_resolution = xf[1] - xf[0]
+        left_freqs = xf[0] + left_ips * freq_resolution
+        right_freqs = xf[0] + right_ips * freq_resolution
+        widths_hz = (right_ips - left_ips) * freq_resolution
+        return widths_hz, left_freqs, right_freqs
 
 def filter_close_peaks_adaptive(freqs, amps, widths_hz, peak_indices, spectrum_resolution_hz):
     if len(freqs) == 0:
@@ -223,9 +246,11 @@ def plot_average_fft(ax: plt.Axes,
                      p95_power: np.ndarray, 
                      peak_indices: np.ndarray, 
                      peak_prominences: np.ndarray,
-                     peak_widths_hz: np.ndarray,
+                     peak_left_freqs: np.ndarray,
+                     peak_right_freqs: np.ndarray,
                      title_info: Dict,
                      show_peaks: bool = True):
+
 
     # 평균 스펙트럼 (파란색 라인)
     ax.plot(xf_master, mean_power, color='blue', linewidth=2.0, label='Average amplitude')
@@ -252,20 +277,19 @@ def plot_average_fft(ax: plt.Axes,
                            label='Prominence', zorder=4)
         
         # FWHP (Full Width at Half-Prominence)
-        for i, (pf, pa, width_hz) in enumerate(zip(peak_freqs, peak_amps, peak_widths_hz)):
-            if pf > 0 and width_hz > 0:
-                # Half-prominence 높이에서 수평선
+        for i, (pf, pa) in enumerate(zip(peak_freqs, peak_amps)):
+            if pf > 0 and peak_prominences[i] > 0:
                 half_height = pa - peak_prominences[i] / 2.0
-                left_f = pf - width_hz / 2.0
-                right_f = pf + width_hz / 2.0
+                left_f = peak_left_freqs[i]   # 실제 스펙트럼과 교차하는 왼쪽 주파수
+                right_f = peak_right_freqs[i] # 실제 스펙트럼과 교차하는 오른쪽 주파수
                 
                 if i == 0:
                     ax.plot([left_f, right_f], [half_height, half_height], 
-                           color='purple', lw=2, label='FWHP', zorder=4)
+                        color='purple', lw=2, label='FWHP', zorder=4)
                 else:
                     ax.plot([left_f, right_f], [half_height, half_height], 
-                           color='purple', lw=2, zorder=4)
-        
+                        color='purple', lw=2, zorder=4)
+
         # 주파수 텍스트
         for pf, pa in zip(peak_freqs, peak_amps):
             if pf > 0:
@@ -567,8 +591,9 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
 
     # 2. 반-돌출부 너비 계산
     prominences = properties['prominences']
-    widths_idx = get_half_prom_widths(mean_power, peaks_idx, properties)
-    widths_hz = widths_idx * freq_resolution
+    widths_hz, left_freqs, right_freqs = get_half_prom_widths_accurate(
+        mean_power, xf_master, peaks_idx, properties
+    )
     
     peak_freqs = xf_master[peaks_idx]
     peak_amps = mean_power[peaks_idx]
@@ -587,11 +612,31 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
     TARGET_N_MODES = 3
     
     if len(filtered_candidates) > TARGET_N_MODES:
-        # 4개 이상 → 주파수 낮은 순 3개만 (1, 2, 3차)
-        logging.info(f"[{sensor_id}] {len(filtered_candidates)}개 모드 발견 → 하위 {TARGET_N_MODES}개(1~3차) 선택")
-        filtered_candidates = filtered_candidates[:TARGET_N_MODES]
-        identified_modes_hz = identified_modes_hz[:TARGET_N_MODES]
-        identified_indices = identified_indices[:TARGET_N_MODES]
+        # 4개 이상 → 가중 스코어로 선택 (저주파 우선 + 진폭 고려)
+        logging.info(f"[{sensor_id}] {len(filtered_candidates)}개 모드 발견 → 가중 스코어로 {TARGET_N_MODES}개 선택")
+        
+        # 스코어 계산: 저주파 70% + 진폭 30%
+        all_freqs = np.array([c['freq'] for c in filtered_candidates])
+        all_amps = np.array([c['amp'] for c in filtered_candidates])
+        
+        for c in filtered_candidates:
+            # 저주파 가중: 1차 모드(~5Hz)가 고차(~15Hz)보다 3배 선호
+            freq_weight = np.exp(-c['freq'] / 10.0)
+            # 진폭 가중: 정규화
+            amp_normalized = c['amp'] / np.max(all_amps)
+            # 최종 스코어: 저주파 70%, 진폭 30%
+            c['score'] = 0.7 * freq_weight + 0.3 * amp_normalized
+        
+        # 스코어 높은 순 정렬 후 상위 3개 선택
+        filtered_candidates.sort(key=lambda x: x['score'], reverse=True)
+        selected = filtered_candidates[:TARGET_N_MODES]
+        
+        # 다시 주파수 오름차순으로 정렬 (1차, 2차, 3차 순서 유지)
+        selected.sort(key=lambda x: x['freq'])
+        filtered_candidates = selected
+        
+        identified_modes_hz = np.array([c['freq'] for c in filtered_candidates])
+        identified_indices = np.array([c['idx'] for c in filtered_candidates])
         
     elif len(filtered_candidates) < TARGET_N_MODES:
         # 1~2개 → 부족한 차수는 0Hz
@@ -617,27 +662,30 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
     identified_prominences = np.array(identified_prominences)
 
     # identified_widths_hz 재구성 (FWHP 시각화용)
-    identified_widths_hz = []
+    identified_left_freqs = []
+    identified_right_freqs = []
     for c in filtered_candidates:
         if c['idx'] in original_idx_list:
             pos = original_idx_list.index(c['idx'])
-            identified_widths_hz.append(widths_hz[pos])
+            identified_left_freqs.append(left_freqs[pos])
+            identified_right_freqs.append(right_freqs[pos])
         else:
-            identified_widths_hz.append(0)
-    identified_widths_hz = np.array(identified_widths_hz)
+            identified_left_freqs.append(0)
+            identified_right_freqs.append(0)
+    identified_left_freqs = np.array(identified_left_freqs)
+    identified_right_freqs = np.array(identified_right_freqs)
 
     logging.info(f"[{sensor_id}] 최종 고유 모드 (Hz): {np.round(identified_modes_hz, 3)}")
 
     # 4. 탐색 빈 정의
     search_bins = []
-    for candidate in filtered_candidates:
-        center_freq = candidate['freq']
-        if center_freq == 0.0:
+    for i, candidate in enumerate(filtered_candidates):
+        if candidate['freq'] == 0.0:
             search_bins.append((0.0, 0.0))
             continue
-        half_width = candidate['width'] / 2.0
-        bin_min = max(PLOT_FREQ_MIN, center_freq - half_width)
-        bin_max = min(PLOT_FREQ_MAX, center_freq + half_width)
+        # 실제 교차점을 탐색 범위로 사용
+        bin_min = max(PLOT_FREQ_MIN, identified_left_freqs[i])
+        bin_max = min(PLOT_FREQ_MAX, identified_right_freqs[i])
         search_bins.append((bin_min, bin_max))
 
     logging.info(f"[{sensor_id}] 탐색 (반-돌출부 너비): {[(round(a,2), round(b,2)) for a,b in search_bins]}")
@@ -679,7 +727,7 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
         fig1, ax1 = plt.subplots(figsize=(16, 8))
         plot_average_fft(ax1, xf_master, mean_power, p05_power, p95_power, 
                         identified_indices, identified_prominences,
-                        identified_widths_hz,
+                        identified_left_freqs, identified_right_freqs,
                         title_info, show_peaks=True)
         fig1.suptitle(f"Sensor Analysis : {sensor_id}", fontsize=16, fontweight='bold')
         fig1.tight_layout(rect=[0, 0.03, 1, 0.95])
