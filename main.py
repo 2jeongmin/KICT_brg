@@ -30,10 +30,10 @@ except ImportError as e:
 # --- 사용자 설정 ---
 
 # 폴더 경로 설정
-BASE_DATA_DIR = Path(r"/home/user/WindowsShare/05. Data/01. Under_Process/027. KICT_BMAPS/upload2")
+BASE_DATA_DIR = Path(r"/media/user/My Book/027. KICT_BMAPS/upload_backup")
 
 # 출력 결과 폴더 경로 설정
-BASE_OUTPUT_DIR = Path(r"/home/user/WindowsShare/05. Data/01. Under_Process/027. KICT_BMAPS/upload") / "upload2_results"
+BASE_OUTPUT_DIR = Path(r"/home/user/WindowsShare/05. Data/01. Under_Process/027. KICT_BMAPS/upload_backup_results")
 
 # FFT 분석 매개변수 설정
 SAMPLING_RATE = 100  # [Hz]
@@ -395,37 +395,67 @@ def process_single_zip_for_pass1(args):
         logging.error(f"Bad zip file {zip_path.name}: {e}")
         return []
 
-def find_hourly_peaks_in_bins(hour, df, extractor, search_bins, mode_column_names):
+def find_hourly_peaks_in_bins(hour, df, extractor, search_bins, mode_column_names, sensor_id):
     """
     PASS 2: 개별 시간별 데이터에서 탐색 빈 내의 피크를 찾음
     """
+    # 기본 데이터 구조
+    hourly_peaks = {
+        'time': hour,
+        'sensor_id': sensor_id,
+        'ptp': 0.0,
+        'mean': 0.0,
+        'std': 0.0,
+        'rms': 0.0,
+        'noise_level': None,  # 다른 알고리즘으로 처리
+        'data_count': len(df),
+        'is_valid': True
+    }
+    
+    # 고유 모드 추가
+    for col in mode_column_names:
+        hourly_peaks[col] = 0.0
+    
     try:
-        xf, power = extractor.get_fft_spectrum(df['value'].values)
+        values = df['value'].values
+        
+        # 1. 기본 통계도 계산
+        hourly_peaks['ptp'] = float(np.ptp(values))
+        hourly_peaks['mean'] = float(np.mean(values))
+        hourly_peaks['std'] = float(np.std(values))
+        hourly_peaks['rms'] = float(np.sqrt(np.mean(values**2)))
+        
+        # 2. 간단한 데이터 검증
+        hourly_peaks['is_valid'] = (
+            np.all(np.isfinite(values)) and 
+            len(values) < 400000 and
+            -100 < np.min(values) and np.max(values) < 100
+        )
+        
+        # 3. FFT 기반 고유 진동수 추출
+        xf, power = extractor.get_fft_spectrum(values)
+        
+        for i, (bin_min, bin_max) in enumerate(search_bins):
+            col_name = mode_column_names[i]
+            
+            if bin_min == 0.0 and bin_max == 0.0:
+                hourly_peaks[col_name] = 0.0
+                continue
+            
+            mask = (xf >= bin_min) & (xf <= bin_max)
+            xf_bin = xf[mask]
+            power_bin = power[mask]
+            
+            if len(xf_bin) == 0:
+                hourly_peaks[col_name] = 0.0
+                continue
+            
+            peak_idx = np.argmax(power_bin)
+            hourly_peaks[col_name] = xf_bin[peak_idx]
+    
     except Exception as e:
-        data = {'time': hour}
-        for col in mode_column_names:
-            data[col] = 0.0
-        return data
-    
-    hourly_peaks = {'time': hour}
-    
-    for i, (bin_min, bin_max) in enumerate(search_bins):
-        col_name = mode_column_names[i]
-        
-        if bin_min == 0.0 and bin_max == 0.0:
-            hourly_peaks[col_name] = 0.0
-            continue
-        
-        mask = (xf >= bin_min) & (xf <= bin_max)
-        xf_bin = xf[mask]
-        power_bin = power[mask]
-        
-        if len(xf_bin) == 0:
-            hourly_peaks[col_name] = 0.0
-            continue
-        
-        peak_idx = np.argmax(power_bin)
-        hourly_peaks[col_name] = xf_bin[peak_idx]
+        logging.warning(f"[{sensor_id}] {hour} 처리 실패: {e}")
+        hourly_peaks['is_valid'] = False
     
     return hourly_peaks
 
@@ -528,7 +558,7 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
     # 이미 처리된 파일이 있는지 확인
     TARGET_N_MODES = 3
     expected_files = [
-        sensor_output_dir / f"{sensor_id}_frequency_trend_{TARGET_N_MODES}_modes.csv",
+        sensor_output_dir / f"{sensor_id}_dynamic_features.csv",
         sensor_output_dir / f"{sensor_id}_1_avg_fft_with_peaks.png",
         sensor_output_dir / f"{sensor_id}_3_freq_trend_{TARGET_N_MODES}_modes.png"
     ]
@@ -695,11 +725,21 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
     hourly_freq_data_for_csv = []
     for hour, df, xf_orig, power_orig in tqdm(hourly_fft_data_cache, desc=f"Pass 2/2 [{sensor_id}]"):
         if df is None: 
-            empty_data = {'time': hour}
+            empty_data = {
+                'time': hour,
+                'sensor_id': sensor_id,
+                'ptp': 0.0,
+                'mean': 0.0,
+                'std': 0.0,
+                'rms': 0.0,
+                'noise_level': None,
+                'data_count': 0,
+                'is_valid': False
+            }
             for col in mode_column_names: empty_data[col] = 0.0
             hourly_freq_data_for_csv.append(empty_data)
             continue
-        hourly_peaks = find_hourly_peaks_in_bins(hour, df, extractor, search_bins, mode_column_names)
+        hourly_peaks = find_hourly_peaks_in_bins(hour, df, extractor, search_bins, mode_column_names, sensor_id)
         hourly_freq_data_for_csv.append(hourly_peaks)
 
     # 결과 저장
@@ -720,7 +760,7 @@ def process_sensor_folder(sensor_dir: Path, base_output_dir: Path):
     freq_trend_df = pd.DataFrame(hourly_freq_data_for_csv)
     if not freq_trend_df.empty:
         freq_trend_df = freq_trend_df.sort_values(by='time')
-        csv_filename = sensor_output_dir / f"{sensor_id}_frequency_trend_{TARGET_N_MODES}_modes.csv"
+        csv_filename = sensor_output_dir / f"{sensor_id}_dynamic_features.csv"
         freq_trend_df.to_csv(csv_filename, index=False)
 
     try:
